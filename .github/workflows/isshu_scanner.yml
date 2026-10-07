@@ -49,40 +49,44 @@ jobs:
               if not text:
                   return None
 
+              # Find all URLs in text
+              urls = re.findall(r'https?://[^\s\>\"\'\]\)]+', text, re.IGNORECASE)
+              print(f'Detected raw URLs in text: {urls}')
+
               # 1. Look for direct .apk URLs
-              apk_urls = re.findall(r'https?://[^\s\)]+?\.apk(?:\?[^\s\)]*)?', text, re.IGNORECASE)
-              if apk_urls:
-                  return apk_urls[0].rstrip(')]>\"\'.,;')
+              for url in urls:
+                  clean_url = url.rstrip(')]>\"\'.,;')
+                  if clean_url.lower().endswith('.apk') or '.apk?' in clean_url.lower():
+                      return clean_url
 
-              # 2. Look for GitHub release URLs
-              release_match = re.search(r'https?://github\.com/([^/\s]+)/([^/\s#]+)/releases(?:/(?:tag/|download/)?([^/\s#]+)|#release-([^\s\)]+))?', text, re.IGNORECASE)
-              if release_match:
-                  owner, repo, tag1, tag2 = release_match.groups()
-                  tag = tag1 or tag2
-                  if tag and tag.lower() != 'latest':
-                      api_url = f'https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}'
-                  else:
-                      api_url = f'https://api.github.com/repos/{owner}/{repo}/releases/latest'
+              # 2. Look for GitHub attachments / uploaded files
+              for url in urls:
+                  clean_url = url.rstrip(')]>\"\'.,;')
+                  if any(p in clean_url.lower() for p in ['user-attachments/assets', '/files/', '/assets/']):
+                      return clean_url
 
-                  try:
-                      headers = {'User-Agent': 'Mozilla/5.0'}
-                      token = os.environ.get('GH_TOKEN')
-                      if token:
-                          headers['Authorization'] = f'token {token}'
-                      req = urllib.request.Request(api_url, headers=headers)
-                      with urllib.request.urlopen(req) as resp:
-                          data = json.loads(resp.read().decode())
-                          for asset in data.get('assets', []):
-                              asset_url = asset.get('browser_download_url', '')
-                              if asset_url.lower().endswith('.apk') or '.apk' in asset_url.lower():
-                                  return asset_url
-                  except Exception as e:
-                      print(f'GitHub API release fetch info: {e}')
-
-              # 3. Look for GitHub file/asset attachment URLs
-              asset_urls = re.findall(r'https?://github\.com/[^\s\)]+?/(?:files|assets|user-attachments/assets)/[^\s\)]+', text, re.IGNORECASE)
-              if asset_urls:
-                  return asset_urls[0].rstrip(')]>\"\'.,;')
+              # 3. Look for GitHub repository or release URLs
+              for url in urls:
+                  clean_url = url.rstrip(')]>\"\'.,;')
+                  match = re.search(r'github\.com/([^/]+)/([^/]+)', clean_url, re.IGNORECASE)
+                  if match:
+                      owner, repo = match.groups()
+                      if owner.lower() not in ['settings', 'features', 'marketplace', 'orgs', 'users', 'topics', 'notifications']:
+                          api_url = f'https://api.github.com/repos/{owner}/{repo}/releases/latest'
+                          try:
+                              headers = {'User-Agent': 'Mozilla/5.0'}
+                              token = os.environ.get('GH_TOKEN')
+                              if token:
+                                  headers['Authorization'] = f'token {token}'
+                              req = urllib.request.Request(api_url, headers=headers)
+                              with urllib.request.urlopen(req) as resp:
+                                  data = json.loads(resp.read().decode())
+                                  for asset in data.get('assets', []):
+                                      asset_url = asset.get('browser_download_url', '')
+                                      if asset_url.lower().endswith('.apk') or '.apk' in asset_url.lower():
+                                          return asset_url
+                          except Exception as e:
+                              print(f'Release fetch info: {e}')
 
               return None
 
@@ -90,17 +94,11 @@ jobs:
           comment_body = os.environ.get('COMMENT_BODY', '')
           issue_body = os.environ.get('ISSUE_BODY', '')
 
-          apk_url = None
-          if event_name == 'issue_comment':
-              apk_url = extract_apk_url(comment_body)
-              if not apk_url:
-                  apk_url = extract_apk_url(issue_body)
-          else:
-              apk_url = extract_apk_url(issue_body)
+          apk_url = extract_apk_url(comment_body if event_name == 'issue_comment' else issue_body)
 
           output_file = os.environ['GITHUB_OUTPUT']
           if apk_url:
-              print(f'Found APK URL: {apk_url}')
+              print(f'Successfully Extracted APK URL: {apk_url}')
               with open(output_file, 'a') as f:
                   f.write(f'found=true\n')
                   f.write(f'apk_url={apk_url}\n')
@@ -121,12 +119,12 @@ jobs:
           python3 -c "
           import zipfile, sys, os
           if not os.path.exists('target_app.apk') or os.path.getsize('target_app.apk') == 0:
-              print('Downloaded file is empty or missing.')
+              print('Error: Downloaded file is empty or missing.')
               sys.exit(1)
           if not zipfile.is_zipfile('target_app.apk'):
-              print('Downloaded file is not a valid zip/APK archive.')
+              print('Error: Downloaded file is not a valid ZIP/APK archive.')
               sys.exit(1)
-          print('Successfully downloaded valid APK archive.')
+          print('Successfully validated APK archive.')
           "
 
       - name: Scan APK with ARIS
@@ -247,3 +245,5 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           gh issue comment "$ISSUE_NUMBER" --body-file comment_report.md
+        
+    
