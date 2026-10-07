@@ -1,4 +1,3 @@
-
 name: Automatic APK Scanner on Issue
 
 on:
@@ -13,24 +12,20 @@ permissions:
 
 jobs:
   scan-apk:
-    # Trigger if URL, github link, or .apk is mentioned in issue or comment
     if: contains(github.event.issue.body, 'http') || contains(github.event.issue.body, '.apk') || (github.event.comment != null && (contains(github.event.comment.body, 'http') || contains(github.event.comment.body, '.apk')))
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Issue Repository
         uses: actions/checkout@v4
 
-      - name: Checkout Submodules
-        run: git submodule update --init --recursive
-
-      - name: Verify Submodule Data
-        run: |
-          if [ ! -s "sampledata/libinfo.jsonl" ]; then
-            echo "::error::Submodule sampledata/libinfo.jsonl is missing or empty!"
-            exit 1
-          fi
-          echo "Submodule sampledata data files verified."
+      - name: Checkout ARIS Scanner (Repo 1)
+        uses: actions/checkout@v4
+        with:
+          repository: 'YOUR_GITHUB_USERNAME/ARIS' # Replace with your Repo 1 (owner/repo)
+          token: ${{ secrets.ARIS_PAT }}
+          path: 'aris-scanner'
+          submodules: 'recursive'
 
       - name: Set up JDK 21
         uses: actions/setup-java@v5
@@ -38,15 +33,6 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
           cache: 'gradle'
-
-      - name: Debug Workflow Context
-        if: ${{ runner.debug == '1' }}
-        run: |
-          echo "::group::Debug Event Context"
-          echo "Event Name: ${{ github.event_name }}"
-          echo "Issue Number: ${{ github.event.issue.number }}"
-          echo "Issue Title: ${{ github.event.issue.title }}"
-          echo "::endgroup::"
 
       - name: Extract APK URL
         id: extract_url
@@ -62,59 +48,10 @@ jobs:
           def extract_apk_url(text):
               if not text:
                   return None
-
-              # 1. Look for direct .apk URLs
               apk_urls = re.findall(r'https?://[^\s\)]+?\.apk(?:\?[^\s\)]*)?', text, re.IGNORECASE)
               if apk_urls:
                   return apk_urls[0].rstrip(')]>\"\'.,;')
 
-              # 2. Look for GitHub release URLs (e.g. /releases/tag/v1.0 or /releases#release-v1.0 or /releases/latest)
-              release_match = re.search(r'https?://github\.com/([^/\s]+)/([^/\s#]+)/releases(?:/(?:tag/|download/)?([^/\s#]+)|#release-([^\s\)]+))?', text, re.IGNORECASE)
-              if release_match:
-                  owner, repo, tag1, tag2 = release_match.groups()
-                  tag = tag1 or tag2
-                  if tag and tag.lower() != 'latest':
-                      api_url = f'https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}'
-                  else:
-                      api_url = f'https://api.github.com/repos/{owner}/{repo}/releases/latest'
-
-                  try:
-                      headers = {'User-Agent': 'Mozilla/5.0'}
-                      token = os.environ.get('GH_TOKEN')
-                      if token:
-                          headers['Authorization'] = f'token {token}'
-                      req = urllib.request.Request(api_url, headers=headers)
-                      with urllib.request.urlopen(req) as resp:
-                          data = json.loads(resp.read().decode())
-                          for asset in data.get('assets', []):
-                              asset_url = asset.get('browser_download_url', '')
-                              if asset_url.lower().endswith('.apk') or '.apk' in asset_url.lower():
-                                  return asset_url
-                  except Exception as e:
-                      print(f'GitHub API release fetch info: {e}')
-
-              # 3. Look for GitHub repository main page URL (e.g. https://github.com/owner/repo) -> fetch latest release
-              repo_match = re.search(r'https?://github\.com/([^/\s]+)/([^/\s#?]+)', text, re.IGNORECASE)
-              if repo_match:
-                  owner, repo = repo_match.groups()
-                  if owner.lower() not in ['settings', 'features', 'marketplace', 'orgs', 'users', 'topics', 'notifications']:
-                      api_url = f'https://api.github.com/repos/{owner}/{repo}/releases/latest'
-                      try:
-                          headers = {'User-Agent': 'Mozilla/5.0'}
-                          token = os.environ.get('GH_TOKEN')
-                          if token:
-                              headers['Authorization'] = f'token {token}'
-                          req = urllib.request.Request(api_url, headers=headers)
-                          with urllib.request.urlopen(req) as resp:
-                              data = json.loads(resp.read().decode())
-                              for asset in data.get('assets', []):
-                                  asset_url = asset.get('browser_download_url', '')
-                                  if asset_url.lower().endswith('.apk') or '.apk' in asset_url.lower():
-                                      return asset_url
-                      except Exception as e:
-                          print(f'GitHub Repo API fetch info: {e}')
-
-              # 4. Look for GitHub file/asset attachment URLs
               asset_urls = re.findall(r'https?://github\.com/[^\s\)]+?/(?:files|assets|user-attachments/assets)/[^\s\)]+', text, re.IGNORECASE)
               if asset_urls:
                   return asset_urls[0].rstrip(')]>\"\'.,;')
@@ -125,26 +62,13 @@ jobs:
           comment_body = os.environ.get('COMMENT_BODY', '')
           issue_body = os.environ.get('ISSUE_BODY', '')
 
-          apk_url = None
-          if event_name == 'issue_comment':
-              apk_url = extract_apk_url(comment_body)
-              if not apk_url:
-                  apk_url = extract_apk_url(issue_body)
-          else:
-              apk_url = extract_apk_url(issue_body)
+          apk_url = extract_apk_url(comment_body if event_name == 'issue_comment' else issue_body)
 
           output_file = os.environ['GITHUB_OUTPUT']
-          if apk_url:
-              print(f'Found APK URL: {apk_url}')
-              with open(output_file, 'a') as f:
-                  f.write(f'found=true\n')
+          with open(output_file, 'a') as f:
+              f.write(f'found={\"true\" if apk_url else \"false\"}\n')
+              if apk_url:
                   f.write(f'apk_url={apk_url}\n')
-                  f.flush()
-          else:
-              print('No valid APK URL found in issue/comment body.')
-              with open(output_file, 'a') as f:
-                  f.write(f'found=false\n')
-                  f.flush()
           "
 
       - name: Download APK File
@@ -152,47 +76,23 @@ jobs:
         env:
           APK_URL: ${{ steps.extract_url.outputs.apk_url }}
         run: |
-          echo "Downloading APK from: $APK_URL"
-          curl -f -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -o target_app.apk "$APK_URL"
-
-          python3 -c "
-          import zipfile, sys, os
-          if not os.path.exists('target_app.apk') or os.path.getsize('target_app.apk') == 0:
-              print('Downloaded file is empty or missing.')
-              sys.exit(1)
-          if not zipfile.is_zipfile('target_app.apk'):
-              print('Downloaded file is not a valid zip/APK archive.')
-              sys.exit(1)
-          print('Successfully downloaded valid APK archive.')
-          "
+          curl -f -L -A "Mozilla/5.0" -o target_app.apk "$APK_URL"
 
       - name: Scan APK with ARIS
         if: success() && steps.extract_url.outputs.found == 'true'
         run: |
           mkdir -p scan_results
-          GRADLE_ARGS=""
-          if [ "${{ runner.debug }}" = "1" ]; then
-            GRADLE_ARGS="--info --stacktrace"
-          fi
-          ./gradlew $GRADLE_ARGS :cli:run --args="scan-apk $PWD/target_app.apk --store-json pretty --json pretty -o $PWD/scan_results"
-
-      - name: Debug Raw Scan Output
-        if: ${{ runner.debug == '1' }}
-        run: |
-          echo "::group::Raw Scan JSON Output"
-          cat scan_results/*.json || true
-          echo "::endgroup::"
+          cd aris-scanner
+          ./gradlew :cli:run --args="scan-apk $PWD/../target_app.apk --store-json pretty --json pretty -o $PWD/../scan_results"
 
       - name: Generate Markdown Scan Report
         if: success() && steps.extract_url.outputs.found == 'true'
-        id: generate_report
         run: |
           python3 -c "
-          import json, glob, os, sys
+          import json, glob, sys
 
           json_files = glob.glob('scan_results/*.json')
           if not json_files:
-              print('No scan result JSON found')
               sys.exit(1)
 
           with open(json_files[0], 'r') as f:
@@ -200,7 +100,6 @@ jobs:
 
           sha256 = data.get('apkFileSha256', 'N/A')
           duration = data.get('scanDurationMs', 0)
-
           manifest_res = data.get('manifestCheckResult', {}) or {}
           manifest = manifest_res.get('manifest', {}) or {}
 
@@ -208,41 +107,6 @@ jobs:
           app_id = manifest.get('appId', 'Unknown')
           version_name = manifest.get('versionName', 'N/A')
           version_code = manifest.get('versionCode', 'N/A')
-          min_sdk = manifest.get('minSdk', 'N/A')
-          target_sdk = manifest.get('targetSdk', 'N/A')
-
-          dangerous_perms = manifest_res.get('dangerousPermissions', [])
-          dangerous_flags = manifest_res.get('dangerousFlags', [])
-          dangerous_filters = manifest_res.get('dangerousFilters', [])
-          requested_perms = [p.get('name', '') for p in manifest.get('permissions', []) if p.get('name')]
-
-          signing_res = data.get('signingCheckResult', {}) or {}
-          apk_sig = signing_res.get('signingSchemas', {}) or signing_res.get('apkSigResult', {}) or {}
-          verified = apk_sig.get('verifiedByApkSig', False)
-          certs = signing_res.get('signingCertificates', []) or signing_res.get('certificateResults', []) or []
-
-          cert_lines = []
-          for idx, cert in enumerate(certs, 1):
-              pub = cert.get('publicKeyResult', {}) or {}
-              algo_size = f\"{pub.get('keyAlgorithm', 'N/A')}/{pub.get('keySizeBits', 'N/A')}\" if pub.get('keyAlgorithm') else 'N/A'
-              cert_lines.append(
-                  f\"  - **Certificate #{idx}**\n\"
-                  f\"    - **Key Algorithm Name:** {cert.get('sigAlgorithmName', 'N/A')}\n\"
-                  f\"    - **Subject:**\n\"
-                  f\"      {cert.get('subjectPrincipal', 'N/A')}\n\"
-                  f\"    - **Not Before:** {cert.get('notBefore', 'N/A')}\n\"
-                  f\"    - **Not After:** {cert.get('notAfter', 'N/A')}\n\"
-                  f\"    - **SHA-256:** \`{cert.get('sha256', 'N/A')}\`\n\"
-                  f\"    - **Public Key**\n\"
-                  f\"      - **Algorithm/Size (bits):** {algo_size}\"
-              )
-
-          certs_formatted = (\"\\n\" + \"\\n\".join(cert_lines)) if cert_lines else \"\"
-
-          lib_res = data.get('libraryCheckResult', {}) or {}
-          detected_libs = [f\"{lib.get('name', 'Unknown')} ({lib.get('type', 'lib')})\" for lib in lib_res.get('detectedLibraries', []) if lib.get('name')]
-          offending_libs = [lib.get('name', '') for lib in lib_res.get('offendingLibraries', []) if lib.get('name')]
-          anti_features = lib_res.get('antiFeatures', [])
 
           report = f'''## 🔍 ARIS APK Scan Results
 
@@ -250,45 +114,15 @@ jobs:
           - **App Name:** {app_label if app_label else 'N/A'}
           - **App ID (Package):** \`{app_id}\`
           - **Version:** {version_name} (Code: {version_code})
-          - **Target SDK:** {target_sdk} | **Min SDK:** {min_sdk}
           - **File SHA-256:** \`{sha256}\`
           - **Scan Duration:** {duration} ms
-
-          ---
-
-          ### 🔒 Signature & Integrity
-          - **Verified by apksig:** {'Verified' if verified else 'Unverified'}
-          - **Number of certificates:** {len(certs)}
-          - **V1 Scheme:** {'✅' if apk_sig.get('v1') else '❌'} | **V2 Scheme:** {'✅' if apk_sig.get('v2') else '❌'} | **V3 Scheme:** {'✅' if apk_sig.get('v3') else '❌'} | **V4 Scheme:** {'✅' if apk_sig.get('v4') else '❌'}{certs_formatted}
-
-          ---
-
-          ### ⚠️ Security & Risk Flags
-          - **Dangerous Permissions ({len(dangerous_perms)}):** {', '.join([f'\`{p}\`' for p in dangerous_perms]) if dangerous_perms else 'None detected'}
-          - **Dangerous Flags ({len(dangerous_flags)}):** {', '.join([f'\`{f}\`' for f in dangerous_flags]) if dangerous_flags else 'None detected'}
-          - **Dangerous Intent Filters ({len(dangerous_filters)}):** {', '.join([f'\`{i}\`' for i in dangerous_filters]) if dangerous_filters else 'None detected'}
-
-          ---
-
-          ### 📋 Requested Permissions ({len(requested_perms)})
-          {', '.join([f'\`{p}\`' for p in requested_perms]) if requested_perms else 'None detected'}
-
-          ---
-
-          ### 📦 Libraries & Anti-Features
-          - **Offending Libraries ({len(offending_libs)}):** {', '.join([f'🚨 \`{o}\`' for o in offending_libs]) if offending_libs else 'None detected'}
-          - **Detected Anti-Features:** {', '.join([f'⚠️ \`{a}\`' for a in anti_features]) if anti_features else 'None detected'}
-          - **Detected Third-Party Libraries ({len(detected_libs)}):** {', '.join(detected_libs) if detected_libs else 'None detected'}
-
-          ---
-          *Automated scan generated by [ARIS](https://github.com/ankanrajghosh509-svg/apkscanner)*
           '''
 
           with open('comment_report.md', 'w') as f:
               f.write(report)
           "
 
-      - name: Post Comment on Issue
+      - name: Post Comment on Issue in Repo 2
         if: success() && steps.extract_url.outputs.found == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
