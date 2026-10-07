@@ -1,0 +1,79 @@
+name: App Issue Scanner
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  scan-and-process:
+    runs-on: ubuntu-latest
+    
+    if: contains(github.event.issue.title, 'Add App') || contains(github.event.issue.title, 'Submit')
+
+    steps:
+      - name: Checkout App Store Repository
+        uses: actions/checkout@v3
+
+      - name: Extract APK URL
+        id: extract_url
+        run: |
+          URL=$(echo "${{ github.event.issue.body }}" | grep -Eo 'https?://[^ ]+\.apk' | head -1)
+          
+          if [ -z "$URL" ]; then
+            echo "No APK URL found!"
+            gh issue comment ${{ github.event.issue.number }} --body "❌ **Error:** No direct APK link found. Please provide a direct download link ending with '.apk'."
+            gh issue close ${{ github.event.issue.number }} --reason "not planned"
+            exit 1
+          fi
+          echo "APK_URL=$URL" >> $GITHUB_ENV
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download APK
+        run: |
+          mkdir -p apks
+          curl -L -o apks/temp_app.apk ${{ env.APK_URL }}
+
+      - name: Clone ARIS Scanner Repo
+        run: git clone https://github.com/ankanrajghosh509-svg/ARIS.git scanner_tool
+
+      - name: Setup Scanner Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install python3 python3-pip aapt -y
+          # pip install -r scanner_tool/requirements.txt (যদি আপনার কোনো লাইব্রেরি লাগে)
+
+      - name: Run ARIS Scanner
+        id: run_scanner
+        run: |
+          echo "Scanning the APK using ARIS..."
+          
+          cd scanner_tool
+          
+          # আপনার দেওয়া কমান্ডটি এখানে বসানো হয়েছে:
+          python3 app.py ../apks/temp_app.apk
+          
+          echo "SCAN_STATUS=success" >> $GITHUB_ENV
+          
+          cd ..
+
+      - name: Reject App (Scan Failed)
+        if: env.SCAN_STATUS == 'failed'
+        run: |
+          gh issue comment ${{ github.event.issue.number }} --body "❌ **Scan Failed!** Security issues found by ARIS. The app will not be added to the store."
+          gh issue edit ${{ github.event.issue.number }} --add-label "rejected"
+          gh issue close ${{ github.event.issue.number }} --reason "not planned"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Accept App & Update Store
+        if: env.SCAN_STATUS == 'success'
+        run: |
+          gh issue comment ${{ github.event.issue.number }} --body "✅ **Scan Passed!** ARIS found no issues. The app is accepted!"
+          gh issue edit ${{ github.event.issue.number }} --add-label "accepted"
+          gh issue close ${{ github.event.issue.number }} --reason "completed"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
